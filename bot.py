@@ -22,7 +22,7 @@ from openpyxl import Workbook
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8965560502:AAFsP2v-4zbzUUG7croI4WZTzZuxlOZR7uU")
 ADMIN_IDS = {697012628}   # ← замените на свой Telegram ID (узнать у @userinfobot)
-DB_PATH = "bot.db"
+DB_PATH = "/data/bot.db"
 
 TYPE_LABELS = {
     "meeting": "Встреча", "ko": "КО", "pd": "ПД",
