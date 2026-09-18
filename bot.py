@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from openpyxl import Workbook
 
 # ============ НАСТРОЙКИ ============
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8965560502:AAFsP2v-4zbzUUG7croI4WZTzZuxlOZR7uU")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬТЕ_СЮДА_ТОКЕН")
 ADMIN_IDS = {697012628}
 DB_PATH = "/data/bot.db"
 
