@@ -13,7 +13,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton,
     BufferedInputFile,
 )
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -21,7 +20,7 @@ from openpyxl import Workbook
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8965560502:AAFsP2v-4zbzUUG7croI4WZTzZuxlOZR7uU")
-ADMIN_IDS = {697012628}   # ← замените на свой Telegram ID (узнать у @userinfobot)
+ADMIN_IDS = {697012628}
 DB_PATH = "/data/bot.db"
 
 TYPE_LABELS = {
@@ -129,25 +128,23 @@ def back_kb():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-# Куда возвращаться с каждого шага (None = в главное меню)
 BACK_MAP = {
     "Meeting:client_fio": None,
     "Meeting:crm_id": "Meeting:client_fio",
     "KO:client_fio": None,
     "KO:crm_id": "KO:client_fio",
+    "PD:amount": None,
+    "PD:revenue": "PD:amount",
+    "PD:business": "PD:revenue",
     "OD:amount": None,
     "OD:revenue": "OD:amount",
     "OD:personal_revenue": "OD:revenue",
     "OD:business": "OD:personal_revenue",
-    "OD:amount": None,
-    "OD:revenue": "OD:amount",
-    "OD:business": "OD:revenue",
     "Payment:amount": None,
     "Payment:client": "Payment:amount",
     "Publication:amount": None,
 }
 
-# Текст-подсказка для каждого шага
 STEP_PROMPTS = {
     "Meeting:client_fio": "Введите ФИО клиента:",
     "Meeting:crm_id": "Введите ID клиента из CRM (или '-', если нет):",
@@ -155,10 +152,10 @@ STEP_PROMPTS = {
     "KO:crm_id": "Введите ID клиента из CRM (или '-', если нет):",
     "PD:amount": "Введите сумму сделки:",
     "PD:revenue": "Введите сумму выручки со сделки:",
-    "OD:personal_revenue": "Введите твою личную выручку со сделки:",
     "PD:business": "Введите наименование бизнеса:",
     "OD:amount": "Введите сумму сделки:",
     "OD:revenue": "Введите сумму выручки со сделки:",
+    "OD:personal_revenue": "Введите твою личную выручку со сделки:",
     "OD:business": "Введите наименование бизнеса:",
     "Payment:amount": "Введите сумму:",
     "Payment:client": "Введите наименование или ID клиента из CRM:",
@@ -194,7 +191,7 @@ class Payment(StatesGroup):
 
 class Publication(StatesGroup):
     amount = State()
-    
+
 # ============ ОБЩИЕ ХЕНДЛЕРЫ ============
 dp = Dispatcher()
 
@@ -261,19 +258,6 @@ async def back_handler(message: Message, state: FSMContext):
         prompt = f"Категория: {label}\n\n{prompt}"
     await message.answer(prompt, reply_markup=back_kb())
 
-# ============ ОТМЕНА ДЕЙСТВИЯ ============
-@dp.message(Command("cancel"))
-@dp.message(F.text.casefold() == "отмена")
-async def cancel_handler(message: Message, state: FSMContext):
-    current = await state.get_state()
-    await state.clear()
-    if current is None:
-        await message.answer("Нечего отменять. Главное меню:",
-                             reply_markup=main_menu(message.from_user.id))
-        return
-    await message.answer("❌ Действие отменено. Главное меню:",
-                         reply_markup=main_menu(message.from_user.id))
-
 # ============ УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК КАТЕГОРИИ ============
 @dp.callback_query(F.data.startswith("cat:"))
 async def cat_handler(cb: CallbackQuery, state: FSMContext):
@@ -303,8 +287,7 @@ async def cat_handler(cb: CallbackQuery, state: FSMContext):
 async def meeting_start(message: Message, state: FSMContext):
     if not await ensure_access(message): return
     await state.clear()
-    await message.answer("Введите ID клиента из CRM (или '-', если нет):",
-                         reply_markup=back_kb())
+    await message.answer("Выберите категорию клиента:", reply_markup=category_kb("meet"))
 
 @dp.message(Meeting.client_fio)
 async def meeting_fio(message: Message, state: FSMContext):
@@ -337,7 +320,8 @@ async def ko_start(message: Message, state: FSMContext):
 async def ko_fio(message: Message, state: FSMContext):
     await state.update_data(client_fio=(message.text or "").strip())
     await state.set_state(KO.crm_id)
-    await message.answer("Введите ID клиента из CRM (или '-', если нет):")
+    await message.answer("Введите ID клиента из CRM (или '-', если нет):",
+                         reply_markup=back_kb())
 
 @dp.message(KO.crm_id)
 async def ko_crm(message: Message, state: FSMContext):
@@ -557,7 +541,7 @@ async def pay_client(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ {TYPE_LABELS[rtype]} зафиксирован.",
                          reply_markup=main_menu(message.from_user.id))
-    
+
 # ============ ПУБЛИКАЦИИ ============
 @dp.message(F.text == "📢 Публикации")
 async def publication_start(message: Message, state: FSMContext):
@@ -578,7 +562,7 @@ async def publication_amount(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Публикация зафиксирована.",
                          reply_markup=main_menu(message.from_user.id))
-    
+
 # ============ УДАЛЕНИЕ СВОЕГО ПД ============
 @dp.message(F.text == "🗑 Удалить открытый ПД")
 async def my_delpd(message: Message, state: FSMContext):
@@ -855,7 +839,6 @@ async def adm_delpd_ok(cb: CallbackQuery):
     await cb.answer("ПД удалён")
     await adm_delpd(cb)
 
-# ============ ЗАПУСК ============
 # ============ ЕЖЕДНЕВНОЕ НАПОМИНАНИЕ ============
 MSK = timezone(timedelta(hours=3))
 
@@ -870,7 +853,6 @@ async def daily_reminder(bot: Bot):
         target = now.replace(hour=15, minute=0, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
-        # Пропускаем субботу (5) и воскресенье (6)
         while target.weekday() >= 5:
             target += timedelta(days=1)
         wait = (target - now).total_seconds()
@@ -886,6 +868,8 @@ async def daily_reminder(bot: Bot):
                 await bot.send_message(u["user_id"], REMINDER_TEXT)
             except Exception as e:
                 print(f"Не удалось отправить {u['user_id']}: {e}")
+
+# ============ ЗАПУСК ============
 async def main():
     db_init()
     bot = Bot(token=BOT_TOKEN,
