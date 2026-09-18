@@ -3,7 +3,7 @@ import io
 import os
 import sqlite3
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -58,10 +58,14 @@ def db_init():
             client_category TEXT,
             deal_amount REAL,
             revenue REAL,
+            personal_revenue REAL,
             business_name TEXT,
             pd_id INTEGER
         );
         """)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(records)").fetchall()]
+        if "personal_revenue" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN personal_revenue REAL")
 
 def get_user(user_id):
     with db() as conn:
@@ -131,9 +135,10 @@ BACK_MAP = {
     "Meeting:crm_id": "Meeting:client_fio",
     "KO:client_fio": None,
     "KO:crm_id": "KO:client_fio",
-    "PD:amount": None,
-    "PD:revenue": "PD:amount",
-    "PD:business": "PD:revenue",
+    "OD:amount": None,
+    "OD:revenue": "OD:amount",
+    "OD:personal_revenue": "OD:revenue",
+    "OD:business": "OD:personal_revenue",
     "OD:amount": None,
     "OD:revenue": "OD:amount",
     "OD:business": "OD:revenue",
@@ -150,6 +155,7 @@ STEP_PROMPTS = {
     "KO:crm_id": "Введите ID клиента из CRM (или '-', если нет):",
     "PD:amount": "Введите сумму сделки:",
     "PD:revenue": "Введите сумму выручки со сделки:",
+    "OD:personal_revenue": "Введите твою личную выручку со сделки:",
     "PD:business": "Введите наименование бизнеса:",
     "OD:amount": "Введите сумму сделки:",
     "OD:revenue": "Введите сумму выручки со сделки:",
@@ -179,6 +185,7 @@ class PD(StatesGroup):
 class OD(StatesGroup):
     amount = State()
     revenue = State()
+    personal_revenue = State()
     business = State()
 
 class Payment(StatesGroup):
@@ -424,19 +431,25 @@ async def od_pick(cb: CallbackQuery, state: FSMContext):
     pd_id = int(cb.data.split(":")[2])
     with db() as conn:
         pd = conn.execute("SELECT * FROM records WHERE id=?", (pd_id,)).fetchone()
-    add_record(cb.from_user.id, "od",
-               pd_id=pd_id,
-               client_category=pd["client_category"],
-               deal_amount=pd["deal_amount"],
-               revenue=pd["revenue"],
-               business_name=pd["business_name"])
-    await cb.message.edit_text(f"✅ ОД закрыт из ПД #{pd_id}.")
-    await cb.message.answer("Главное меню:", reply_markup=main_menu(cb.from_user.id))
+    await state.update_data(
+        od_source="pd",
+        pending_pd_id=pd_id,
+        pending_category=pd["client_category"],
+        pending_amount=pd["deal_amount"],
+        pending_revenue=pd["revenue"],
+        pending_business=pd["business_name"],
+    )
+    await state.set_state(OD.personal_revenue)
+    await cb.message.edit_text(f"ПД #{pd_id} выбран.")
+    await cb.message.answer("Введите твою личную выручку со сделки:",
+                            reply_markup=back_kb())
     await cb.answer()
 
 @dp.callback_query(F.data == "od:no_pd")
 async def od_no_pd(cb: CallbackQuery, state: FSMContext):
-    await cb.message.edit_text("Выберите категорию клиента:", reply_markup=category_kb("od"))
+    await state.update_data(od_source="new", pending_pd_id=None)
+    await cb.message.edit_text("Выберите категорию клиента:",
+                               reply_markup=category_kb("od"))
     await cb.answer()
 
 @dp.message(OD.amount)
@@ -458,6 +471,33 @@ async def od_revenue(message: Message, state: FSMContext):
         await message.answer("Введите число.")
         return
     await state.update_data(revenue=rev)
+    await state.set_state(OD.personal_revenue)
+    await message.answer("Введите твою личную выручку со сделки:", reply_markup=back_kb())
+
+@dp.message(OD.personal_revenue)
+async def od_personal_revenue(message: Message, state: FSMContext):
+    try:
+        pr = float((message.text or "").replace(",", ".").replace(" ", ""))
+    except ValueError:
+        await message.answer("Введите число.")
+        return
+    await state.update_data(personal_revenue=pr)
+
+    data = await state.get_data()
+
+    if data.get("od_source") == "pd":
+        add_record(message.from_user.id, "od",
+                   pd_id=data.get("pending_pd_id"),
+                   client_category=data.get("pending_category"),
+                   deal_amount=data.get("pending_amount"),
+                   revenue=data.get("pending_revenue"),
+                   personal_revenue=pr,
+                   business_name=data.get("pending_business"))
+        await state.clear()
+        await message.answer("✅ ОД закрыт из ПД.",
+                             reply_markup=main_menu(message.from_user.id))
+        return
+
     await state.set_state(OD.business)
     await message.answer("Введите наименование бизнеса:", reply_markup=back_kb())
 
@@ -468,6 +508,7 @@ async def od_business(message: Message, state: FSMContext):
                client_category=data.get("category"),
                deal_amount=data.get("deal_amount"),
                revenue=data.get("revenue"),
+               personal_revenue=data.get("personal_revenue"),
                business_name=(message.text or "").strip())
     await state.clear()
     await message.answer("✅ ОД зафиксирован.",
@@ -505,11 +546,14 @@ async def pay_amount(message: Message, state: FSMContext):
 @dp.message(Payment.client)
 async def pay_client(message: Message, state: FSMContext):
     data = await state.get_data()
-    add_record(message.from_user.id, data["rtype"],
-               deal_amount=data["deal_amount"],
-               revenue=data["deal_amount"],
-               client_fio=(message.text or "").strip())
     rtype = data["rtype"]
+    amount = data["deal_amount"]
+    personal = amount * 0.8 if rtype == "dvou" else amount
+    add_record(message.from_user.id, rtype,
+               deal_amount=amount,
+               revenue=amount,
+               personal_revenue=personal,
+               client_fio=(message.text or "").strip())
     await state.clear()
     await message.answer(f"✅ {TYPE_LABELS[rtype]} зафиксирован.",
                          reply_markup=main_menu(message.from_user.id))
@@ -581,7 +625,13 @@ async def show_personal(target, user_id, year, month, edit: bool):
             WHERE user_id=? AND strftime('%Y', created_at)=? AND strftime('%m', created_at)=?
             GROUP BY record_type
         """, (user_id, f"{year:04d}", f"{month:02d}")).fetchall()
+        rev_row = conn.execute("""
+            SELECT COALESCE(SUM(personal_revenue), 0) as total FROM records
+            WHERE user_id=? AND strftime('%Y', created_at)=? AND strftime('%m', created_at)=?
+              AND record_type IN ('od', 'dou', 'dvou')
+        """, (user_id, f"{year:04d}", f"{month:02d}")).fetchone()
     stats = {r["record_type"]: r["c"] for r in rows}
+    total_revenue = rev_row["total"] or 0
     text = (
         f"📊 <b>Личный кабинет за {month:02d}.{year}</b>\n\n"
         f"📅 Встречи: {stats.get('meeting', 0)}\n"
@@ -590,7 +640,8 @@ async def show_personal(target, user_id, year, month, edit: bool):
         f"✅ ОД: {stats.get('od', 0)}\n"
         f"💰 ДВОУ: {stats.get('dvou', 0)}\n"
         f"💳 ДОУ: {stats.get('dou', 0)}\n"
-        f"📢 Публикации: {stats.get('publication', 0)}"
+        f"📢 Публикации: {stats.get('publication', 0)}\n\n"
+        f"💵 <b>Личная выручка за месяц: {total_revenue:,.0f}</b>"
     )
     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
     next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
@@ -742,7 +793,7 @@ async def adm_export(cb: CallbackQuery):
     ws.title = "Records"
     ws.append(["ID", "Сотрудник", "Тип", "Дата и время", "Категория клиента",
                "ФИО клиента", "CRM ID", "Сумма сделки", "Выручка",
-               "Наименование бизнеса", "PD_ID"])
+               "Личная выручка", "Наименование бизнеса", "PD_ID"])
     with db() as conn:
         rows = conn.execute("""
             SELECT r.*, u.fio FROM records r
@@ -759,6 +810,7 @@ async def adm_export(cb: CallbackQuery):
             r["client_crm_id"] or "",
             r["deal_amount"] or 0,
             r["revenue"] or 0,
+            r["personal_revenue"] or 0,
             r["business_name"] or "",
             r["pd_id"] or "",
         ])
@@ -804,10 +856,41 @@ async def adm_delpd_ok(cb: CallbackQuery):
     await adm_delpd(cb)
 
 # ============ ЗАПУСК ============
+# ============ ЕЖЕДНЕВНОЕ НАПОМИНАНИЕ ============
+MSK = timezone(timedelta(hours=3))
+
+REMINDER_TEXT = (
+    "💼 Я знаю, что ты лучший бизнес-брокер, "
+    "но перепроверь — всё ли ты внёс за сегодня?"
+)
+
+async def daily_reminder(bot: Bot):
+    while True:
+        now = datetime.now(MSK)
+        target = now.replace(hour=15, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        # Пропускаем субботу (5) и воскресенье (6)
+        while target.weekday() >= 5:
+            target += timedelta(days=1)
+        wait = (target - now).total_seconds()
+        print(f"Напоминание запланировано на {target.strftime('%Y-%m-%d %H:%M')} МСК")
+        await asyncio.sleep(wait)
+
+        with db() as conn:
+            users = conn.execute(
+                "SELECT user_id FROM users WHERE is_active=1"
+            ).fetchall()
+        for u in users:
+            try:
+                await bot.send_message(u["user_id"], REMINDER_TEXT)
+            except Exception as e:
+                print(f"Не удалось отправить {u['user_id']}: {e}")
 async def main():
     db_init()
     bot = Bot(token=BOT_TOKEN,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    asyncio.create_task(daily_reminder(bot))
     print("Бот запущен")
     await dp.start_polling(bot)
 
