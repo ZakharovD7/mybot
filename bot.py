@@ -118,6 +118,47 @@ def category_kb(prefix: str):
     kb.adjust(1)
     return kb.as_markup()
 
+def back_kb():
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="◀️ Назад")
+    kb.button(text="❌ Отмена")
+    kb.adjust(2)
+    return kb.as_markup(resize_keyboard=True)
+
+# Куда возвращаться с каждого шага (None = в главное меню)
+BACK_MAP = {
+    "Meeting:client_fio": None,
+    "Meeting:crm_id": "Meeting:client_fio",
+    "KO:client_fio": None,
+    "KO:crm_id": "KO:client_fio",
+    "PD:amount": None,
+    "PD:revenue": "PD:amount",
+    "PD:business": "PD:revenue",
+    "OD:amount": None,
+    "OD:revenue": "OD:amount",
+    "OD:business": "OD:revenue",
+    "Payment:amount": None,
+    "Payment:client": "Payment:amount",
+    "Publication:amount": None,
+}
+
+# Текст-подсказка для каждого шага
+STEP_PROMPTS = {
+    "Meeting:client_fio": "Введите ФИО клиента:",
+    "Meeting:crm_id": "Введите ID клиента из CRM (или '-', если нет):",
+    "KO:client_fio": "Введите ФИО клиента:",
+    "KO:crm_id": "Введите ID клиента из CRM (или '-', если нет):",
+    "PD:amount": "Введите сумму сделки:",
+    "PD:revenue": "Введите сумму выручки со сделки:",
+    "PD:business": "Введите наименование бизнеса:",
+    "OD:amount": "Введите сумму сделки:",
+    "OD:revenue": "Введите сумму выручки со сделки:",
+    "OD:business": "Введите наименование бизнеса:",
+    "Payment:amount": "Введите сумму:",
+    "Payment:client": "Введите наименование или ID клиента из CRM:",
+    "Publication:amount": "Введите сумму продажи объекта:",
+}
+
 # ============ FSM ============
 class Reg(StatesGroup):
     fio = State()
@@ -174,6 +215,45 @@ async def reg_fio(message: Message, state: FSMContext):
     await message.answer(f"✅ Регистрация завершена, {fio}!",
                          reply_markup=main_menu(message.from_user.id))
 
+# ============ КНОПКИ НАЗАД / ОТМЕНА ============
+@dp.message(Command("cancel"))
+@dp.message(F.text.casefold() == "отмена")
+@dp.message(F.text == "❌ Отмена")
+async def cancel_handler(message: Message, state: FSMContext):
+    current = await state.get_state()
+    await state.clear()
+    if current is None:
+        await message.answer("Нечего отменять. Главное меню:",
+                             reply_markup=main_menu(message.from_user.id))
+        return
+    await message.answer("❌ Действие отменено. Главное меню:",
+                         reply_markup=main_menu(message.from_user.id))
+
+@dp.message(F.text == "◀️ Назад")
+async def back_handler(message: Message, state: FSMContext):
+    current = await state.get_state()
+    if current is None:
+        await message.answer("Главное меню:",
+                             reply_markup=main_menu(message.from_user.id))
+        return
+    prev = BACK_MAP.get(current)
+    if prev is None:
+        await state.clear()
+        await message.answer("Главное меню:",
+                             reply_markup=main_menu(message.from_user.id))
+        return
+    await state.set_state(prev)
+    prompt = STEP_PROMPTS.get(prev, "Введите значение:")
+    if prev == "Payment:amount":
+        data = await state.get_data()
+        rtype = data.get("rtype", "")
+        prompt = f"Введите сумму {TYPE_LABELS.get(rtype, '')}:"
+    elif prev in ("Meeting:client_fio", "KO:client_fio"):
+        data = await state.get_data()
+        label = CAT_LABELS.get(data.get("category"), "")
+        prompt = f"Категория: {label}\n\n{prompt}"
+    await message.answer(prompt, reply_markup=back_kb())
+
 # ============ ОТМЕНА ДЕЙСТВИЯ ============
 @dp.message(Command("cancel"))
 @dp.message(F.text.casefold() == "отмена")
@@ -195,16 +275,20 @@ async def cat_handler(cb: CallbackQuery, state: FSMContext):
     label = CAT_LABELS[cat]
     if prefix == "meet":
         await state.set_state(Meeting.client_fio)
-        await cb.message.edit_text(f"Категория: {label}\n\nВведите ФИО клиента:")
+        await cb.message.edit_text(f"Категория: {label}")
+        await cb.message.answer("Введите ФИО клиента:", reply_markup=back_kb())
     elif prefix == "ko":
         await state.set_state(KO.client_fio)
-        await cb.message.edit_text(f"Категория: {label}\n\nВведите ФИО клиента:")
+        await cb.message.edit_text(f"Категория: {label}")
+        await cb.message.answer("Введите ФИО клиента:", reply_markup=back_kb())
     elif prefix == "pd":
         await state.set_state(PD.amount)
-        await cb.message.edit_text(f"Категория: {label}\n\nВведите сумму сделки:")
+        await cb.message.edit_text(f"Категория: {label}")
+        await cb.message.answer("Введите сумму сделки:", reply_markup=back_kb())
     elif prefix == "od":
         await state.set_state(OD.amount)
-        await cb.message.edit_text(f"Категория: {label}\n\nВведите сумму сделки:")
+        await cb.message.edit_text(f"Категория: {label}")
+        await cb.message.answer("Введите сумму сделки:", reply_markup=back_kb())
     await cb.answer()
 
 # ============ ВСТРЕЧА ============
@@ -212,13 +296,15 @@ async def cat_handler(cb: CallbackQuery, state: FSMContext):
 async def meeting_start(message: Message, state: FSMContext):
     if not await ensure_access(message): return
     await state.clear()
-    await message.answer("Выберите категорию клиента:", reply_markup=category_kb("meet"))
+    await message.answer("Введите ID клиента из CRM (или '-', если нет):",
+                         reply_markup=back_kb())
 
 @dp.message(Meeting.client_fio)
 async def meeting_fio(message: Message, state: FSMContext):
     await state.update_data(client_fio=(message.text or "").strip())
     await state.set_state(Meeting.crm_id)
-    await message.answer("Введите ID клиента из CRM (или '-', если нет):")
+    await message.answer("Введите ID клиента из CRM (или '-', если нет):",
+                         reply_markup=back_kb())
 
 @dp.message(Meeting.crm_id)
 async def meeting_crm(message: Message, state: FSMContext):
@@ -275,7 +361,7 @@ async def pd_amount(message: Message, state: FSMContext):
         return
     await state.update_data(deal_amount=amount)
     await state.set_state(PD.revenue)
-    await message.answer("Введите сумму выручки со сделки:")
+    await message.answer("Введите сумму выручки со сделки:", reply_markup=back_kb())
 
 @dp.message(PD.revenue)
 async def pd_revenue(message: Message, state: FSMContext):
@@ -286,7 +372,7 @@ async def pd_revenue(message: Message, state: FSMContext):
         return
     await state.update_data(revenue=rev)
     await state.set_state(PD.business)
-    await message.answer("Введите наименование бизнеса:")
+    await message.answer("Введите наименование бизнеса:", reply_markup=back_kb())
 
 @dp.message(PD.business)
 async def pd_business(message: Message, state: FSMContext):
@@ -362,7 +448,7 @@ async def od_amount(message: Message, state: FSMContext):
         return
     await state.update_data(deal_amount=amount)
     await state.set_state(OD.revenue)
-    await message.answer("Введите сумму выручки со сделки:")
+    await message.answer("Введите сумму выручки со сделки:", reply_markup=back_kb())
 
 @dp.message(OD.revenue)
 async def od_revenue(message: Message, state: FSMContext):
@@ -373,7 +459,7 @@ async def od_revenue(message: Message, state: FSMContext):
         return
     await state.update_data(revenue=rev)
     await state.set_state(OD.business)
-    await message.answer("Введите наименование бизнеса:")
+    await message.answer("Введите наименование бизнеса:", reply_markup=back_kb())
 
 @dp.message(OD.business)
 async def od_business(message: Message, state: FSMContext):
@@ -394,7 +480,7 @@ async def dvou_start(message: Message, state: FSMContext):
     await state.clear()
     await state.update_data(rtype="dvou")
     await state.set_state(Payment.amount)
-    await message.answer("Введите сумму ДВОУ:")
+    await message.answer("Введите сумму ДВОУ:", reply_markup=back_kb())
 
 @dp.message(F.text == "💳 Платный ДОУ")
 async def dou_start(message: Message, state: FSMContext):
@@ -402,7 +488,7 @@ async def dou_start(message: Message, state: FSMContext):
     await state.clear()
     await state.update_data(rtype="dou")
     await state.set_state(Payment.amount)
-    await message.answer("Введите сумму ДОУ:")
+    await message.answer("Введите сумму ДОУ:", reply_markup=back_kb())
 
 @dp.message(Payment.amount)
 async def pay_amount(message: Message, state: FSMContext):
@@ -413,7 +499,8 @@ async def pay_amount(message: Message, state: FSMContext):
         return
     await state.update_data(deal_amount=amount)
     await state.set_state(Payment.client)
-    await message.answer("Введите наименование или ID клиента из CRM:")
+    await message.answer("Введите наименование или ID клиента из CRM:",
+                         reply_markup=back_kb())
 
 @dp.message(Payment.client)
 async def pay_client(message: Message, state: FSMContext):
@@ -433,7 +520,7 @@ async def publication_start(message: Message, state: FSMContext):
     if not await ensure_access(message): return
     await state.clear()
     await state.set_state(Publication.amount)
-    await message.answer("Введите сумму продажи объекта:")
+    await message.answer("Введите сумму продажи объекта:", reply_markup=back_kb())
 
 @dp.message(Publication.amount)
 async def publication_amount(message: Message, state: FSMContext):
