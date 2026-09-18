@@ -27,6 +27,7 @@ DB_PATH = "/data/bot.db"
 TYPE_LABELS = {
     "meeting": "Встреча", "ko": "КО", "pd": "ПД",
     "od": "ОД", "dvou": "ДВОУ", "dou": "ДОУ",
+    "publication": "Публикация",
 }
 CAT_LABELS = {"buyer": "покупатель", "seller": "продавец", "both": "покупатель и продавец"}
 
@@ -100,6 +101,7 @@ def main_menu(user_id):
     kb.button(text="✅ Закрыл ОД")
     kb.button(text="💰 Платный ДВОУ")
     kb.button(text="💳 Платный ДОУ")
+    kb.button(text="📢 Публикации")
     kb.button(text="👤 Личный кабинет")
     kb.button(text="🗑 Удалить открытый ПД")
     if is_admin(user_id):
@@ -142,6 +144,9 @@ class Payment(StatesGroup):
     amount = State()
     client = State()
 
+class Publication(StatesGroup):
+    amount = State()
+    
 # ============ ОБЩИЕ ХЕНДЛЕРЫ ============
 dp = Dispatcher()
 
@@ -408,7 +413,29 @@ async def pay_client(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ {TYPE_LABELS[rtype]} зафиксирован.",
                          reply_markup=main_menu(message.from_user.id))
+    
+# ============ ПУБЛИКАЦИИ ============
+@dp.message(F.text == "📢 Публикации")
+async def publication_start(message: Message, state: FSMContext):
+    if not await ensure_access(message): return
+    await state.clear()
+    await state.set_state(Publication.amount)
+    await message.answer("Введите сумму продажи объекта:")
 
+@dp.message(Publication.amount)
+async def publication_amount(message: Message, state: FSMContext):
+    try:
+        amount = float((message.text or "").replace(",", ".").replace(" ", ""))
+    except ValueError:
+        await message.answer("Введите число.")
+        return
+    add_record(message.from_user.id, "publication",
+               deal_amount=amount,
+               revenue=amount)
+    await state.clear()
+    await message.answer("✅ Публикация зафиксирована.",
+                         reply_markup=main_menu(message.from_user.id))
+    
 # ============ УДАЛЕНИЕ СВОЕГО ПД ============
 @dp.message(F.text == "🗑 Удалить открытый ПД")
 async def my_delpd(message: Message, state: FSMContext):
@@ -463,7 +490,8 @@ async def show_personal(target, user_id, year, month, edit: bool):
         f"📄 ПД: {stats.get('pd', 0)}\n"
         f"✅ ОД: {stats.get('od', 0)}\n"
         f"💰 ДВОУ: {stats.get('dvou', 0)}\n"
-        f"💳 ДОУ: {stats.get('dou', 0)}"
+        f"💳 ДОУ: {stats.get('dou', 0)}\n"
+        f"📢 Публикации: {stats.get('publication', 0)}"
     )
     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
     next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
@@ -510,7 +538,8 @@ async def show_admin_stats(target, year, month, edit: bool):
         text += (f"<b>{fio}</b>\n"
                  f"  📅 {s.get('meeting',0)} | 🏢 {s.get('ko',0)} | "
                  f"📄 {s.get('pd',0)} | ✅ {s.get('od',0)} | "
-                 f"💰 {s.get('dvou',0)} | 💳 {s.get('dou',0)}\n\n")
+                 f"💰 {s.get('dvou',0)} | 💳 {s.get('dou',0)} | "
+                 f"📢 {s.get('publication',0)}\n\n")
     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
     next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
     kb = InlineKeyboardBuilder()
