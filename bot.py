@@ -8,7 +8,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -172,6 +172,19 @@ async def reg_fio(message: Message, state: FSMContext):
     create_user(message.from_user.id, fio)
     await state.clear()
     await message.answer(f"✅ Регистрация завершена, {fio}!",
+                         reply_markup=main_menu(message.from_user.id))
+
+# ============ ОТМЕНА ДЕЙСТВИЯ ============
+@dp.message(Command("cancel"))
+@dp.message(F.text.casefold() == "отмена")
+async def cancel_handler(message: Message, state: FSMContext):
+    current = await state.get_state()
+    await state.clear()
+    if current is None:
+        await message.answer("Нечего отменять. Главное меню:",
+                             reply_markup=main_menu(message.from_user.id))
+        return
+    await message.answer("❌ Действие отменено. Главное меню:",
                          reply_markup=main_menu(message.from_user.id))
 
 # ============ УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК КАТЕГОРИИ ============
@@ -430,8 +443,7 @@ async def publication_amount(message: Message, state: FSMContext):
         await message.answer("Введите число.")
         return
     add_record(message.from_user.id, "publication",
-               deal_amount=amount,
-               revenue=amount)
+               deal_amount=amount)
     await state.clear()
     await message.answer("✅ Публикация зафиксирована.",
                          reply_markup=main_menu(message.from_user.id))
