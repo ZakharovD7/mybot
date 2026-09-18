@@ -657,23 +657,48 @@ async def pstats_nav(cb: CallbackQuery):
 async def show_admin_stats(target, year, month, edit: bool):
     with db() as conn:
         rows = conn.execute("""
-            SELECT u.fio, r.record_type, COUNT(*) as c
-            FROM records r JOIN users u ON u.user_id=r.user_id
-            WHERE strftime('%Y', r.created_at)=? AND strftime('%m', r.created_at)=?
+            SELECT u.fio, r.record_type, COUNT(r.id) as c
+            FROM users u
+            LEFT JOIN records r
+              ON r.user_id = u.user_id
+              AND strftime('%Y', r.created_at)=?
+              AND strftime('%m', r.created_at)=?
+            WHERE u.is_active = 1
             GROUP BY u.fio, r.record_type
+        """, (f"{year:04d}", f"{month:02d}")).fetchall()
+        rev_rows = conn.execute("""
+            SELECT u.fio, COALESCE(SUM(r.personal_revenue), 0) as total
+            FROM users u
+            LEFT JOIN records r
+              ON r.user_id = u.user_id
+              AND strftime('%Y', r.created_at)=?
+              AND strftime('%m', r.created_at)=?
+              AND r.record_type IN ('od', 'dou', 'dvou')
+            WHERE u.is_active = 1
+            GROUP BY u.fio
         """, (f"{year:04d}", f"{month:02d}")).fetchall()
     data = defaultdict(lambda: defaultdict(int))
     for r in rows:
         data[r["fio"]][r["record_type"]] = r["c"]
+    revenues = {r["fio"]: r["total"] or 0 for r in rev_rows}
+    all_fios = set(data.keys()) | set(revenues.keys())
+
     text = f"📊 <b>Общая статистика за {month:02d}.{year}</b>\n\n"
-    if not data:
-        text += "Нет данных."
-    for fio, s in data.items():
+    if not all_fios:
+        text += "Нет активных сотрудников."
+    for fio in sorted(all_fios):
+        s = data.get(fio, {})
+        rev = revenues.get(fio, 0)
         text += (f"<b>{fio}</b>\n"
                  f"  📅 {s.get('meeting',0)} | 🏢 {s.get('ko',0)} | "
                  f"📄 {s.get('pd',0)} | ✅ {s.get('od',0)} | "
                  f"💰 {s.get('dvou',0)} | 💳 {s.get('dou',0)} | "
-                 f"📢 {s.get('publication',0)}\n\n")
+                 f"📢 {s.get('publication',0)}\n"
+                 f"  💵 Личная выручка: {rev:,.0f}\n\n")
+
+    total_all = sum(revenues.values())
+    text += f"━━━━━━━━━━━━━━━\n💵 <b>Итого по команде: {total_all:,.0f}</b>"
+
     prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
     next_y, next_m = (year + 1, 1) if month == 12 else (year, month + 1)
     kb = InlineKeyboardBuilder()
