@@ -402,6 +402,7 @@ async def pay_client(message: Message, state: FSMContext):
     data = await state.get_data()
     add_record(message.from_user.id, data["rtype"],
                deal_amount=data["deal_amount"],
+               revenue=data["deal_amount"],
                client_fio=(message.text or "").strip())
     rtype = data["rtype"]
     await state.clear()
